@@ -1,5 +1,6 @@
 import java.io.*;
 import java.net.*;
+import java.util.*;
 
 public class DFSClient {
     private String currentFilePath;
@@ -12,18 +13,65 @@ public class DFSClient {
     public static void main(String[] args) {
         DFSClient client = new DFSClient();
         try {
-            System.out.println("Testing DFSClient...");
-            // Open file with read-write mode(rw)
-            client.open("localhost", "sample.txt", "RW");
+            //System.out.println("Testing DFSClient...");
+            //client.open("localhost", "sample.txt", "RW");
             // Read current content
-            System.out.println("Current cache: " + client.read());
+            //System.out.println("Current cache: " + client.read());
             // Rewrite content
-            System.out.println("Writing Data...");
-            client.write("Hello, Distributed File System!\nThis is a test message.");
-            client.close();
+            //System.out.println("Test completed");            
+            // Open file with read-write mode(rw)
+            Scanner scanner = new Scanner(System.in);
+            
+            
+            while (true) {
+                System.out.print("> ");
+                String command = scanner.nextLine().trim();
+                String[] parts = command.split(" ", 4);
+                
+                if (parts.length == 0) continue;
+                String cmd = parts[0].toLowerCase();
 
-            System.out.println("Test completed");
+                switch (cmd) {
+                    case "open":
+                        if (parts.length >= 4) {
+                            client.open(parts[1], parts[2], parts[3]);
+                        } else {
+                        System.out.println("Format: open <host> <path> <mode>");
+                        }
+                        break;
 
+                    case "read":
+                        System.out.println("Current cache: " + client.read());
+                        break;
+
+                    case "write":
+                        if (parts.length >= 2) {
+                            client.write(parts[1]);
+                        } else {
+                            System.out.println("Format: write <content>");
+                        }
+                        break;
+                
+                    case "close":
+                        client.close();
+                        break;
+
+                    case "ls":
+                        client.listFiles();
+                        break;
+
+                    case "vlock":
+                        client.viewLocks();
+                        break;
+
+                    case "exit":
+                        System.out.println("Test completed");
+                        return;
+
+                    default:
+                        System.out.println("Unknown command. Available: open, read, write, close, exit, ls, vlock");
+            }
+        }
         } catch (IOException e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
@@ -39,6 +87,7 @@ public class DFSClient {
         try (Socket socket = new Socket(serverHost, serverPort);
                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                 BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+
 
             out.println("FETCH " + path + " " + mode);
             String status = in.readLine();
@@ -74,22 +123,72 @@ public class DFSClient {
 
     // close: 変更があればサーバへ送る
     public void close() throws IOException {
-        if ((accessMode.contains("WRITE") || accessMode.contains("RW")) && isDirty) {
+        if ((accessMode.contains("WRITE") || accessMode.contains("RW"))) {
             try (Socket socket = new Socket(serverHost, serverPort);
                     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                     BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+                
 
-                out.println("STORE " + currentFilePath);
-                out.print(localCache + "\n__END__\n");
-                out.flush();
+                if(isDirty){
+                   
+                    out.println("STORE " + currentFilePath);
+                    out.print(localCache + "\n__END__\n");
+                    out.flush();
 
-                if ("SUCCESS".equals(in.readLine())) {
-                    System.out.println("Changes saved to server.");
+                    String w = in.readLine();
+                    System.out.println("Server response: " + w);
+
+                    if ("SUCCESS".equals(w)) {
+                        System.out.println("Changes saved to server.");
+                    }
+                }else{
+                    out.println("UNLOCK " + currentFilePath);//ロック解除だけ行う
+                    if ("SUCCESS".equals(in.readLine())) System.out.println("No changes to save.");
                 }
+        
             }
         }
+
         this.localCache = null;
         this.currentFilePath = null;
         System.out.println("Client closed.");
+    }
+
+    // listFiles: サーバ上のファイル一覧を取得
+    public void listFiles() throws IOException { 
+        try (Socket socket = new Socket(serverHost, serverPort);
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+
+            out.println("LIST_FILES");//コマンドをサーバへ送信
+            
+            String line;
+            
+            while (!(line = in.readLine()).equals("FILES_LIST_END")) { 
+                if (!line.equals("FILES_LIST_START")) {
+                    System.out.println(line);
+                }
+            }
+        }
+    }
+
+    // viewLocks: サーバ上のファイルのロック状態を取得
+    public void viewLocks() throws IOException { 
+        try (Socket socket = new Socket(serverHost, serverPort);
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+
+            out.println("VIEW_LOCKS");//コマンドをサーバへ送信
+
+            String line;
+            System.out.println("Current Locks on server:");
+
+            while (!(line = in.readLine()).equals("LOCKS_LIST_END")) {
+                if (!line.equals("LOCKS_LIST_START")) {
+                    System.out.println(" - " + line);
+                }
+            }
+
+        }
     }
 }
