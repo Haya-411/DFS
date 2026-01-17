@@ -7,154 +7,179 @@ import java.time.format.DateTimeFormatter;
 
 public class DFSServer {
     private static final int PORT = 8080;
+    // タイムアウトを設定(30秒)
+    private static final long TIMEOUT_MS = 30_000; // 30秒
     // ファイル内容をメモリ上で管理
-    private static Map<String, File> fileStore = new ConcurrentHashMap<>();
-    // 書き込み制限(同時書き込みを防ぐ)
-    private static Map<String, String> writeLocks = new ConcurrentHashMap<>();
+    private static Map<String, FileEntry> files = new ConcurrentHashMap<>();
+    // 書き込み制限(同時書き込みを防ぐ): file → LockInfo
+    private static Map<String, LockState> locks = new ConcurrentHashMap<>();
 
-    private static enum modeSet { //アクセスモードの集合
-        READ_ONLY, WRITE_ONLY, RW
+    static class FileEntry {// ファイル情報を管理するクラス
+        String content; // ファイル内容
+        int version = 0; // バージョン番号 (int)
+
+        FileEntry(String content) {
+            this.content = content;
+        }
+    }
+
+    // ロック情報
+    static class LockState {
+        Set<String> readers = new HashSet<>();
+        String writer = null;
+        long lastActiveTime = System.currentTimeMillis(); // タイムアウト判定用
+
+        void touch() {
+            this.lastActiveTime = System.currentTimeMillis();
+        }
     }
 
     public static void main(String[] args) throws IOException {
         ServerSocket serverSocket = new ServerSocket(PORT);
         System.out.println("DFS Server started on port " + PORT);
 
+        // タイムアウト監視
+        startTimeoutCleaner();
+
         while (true) {
-            Socket clientSocket = serverSocket.accept();
-            new Thread(new ClientHandler(clientSocket)).start();
+            Socket Clientsocket = serverSocket.accept();
+            new ClientHandler(Clientsocket).start();
         }
     }
 
-    static class File{// ファイル情報を管理するクラス
-        String content; // ファイル内容
-        LocalDateTime lastsaved; // 最終保存日時(closeにより更新された時間)
-        LocalDateTime lastaccessed; // 最終アクセス日時(openした時間)
-
-        public File() {
-            this.content = "";
-            this.lastsaved = null;
-            this.lastaccessed = LocalDateTime.now();
-        }
+    private static void startTimeoutCleaner() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(() -> {
+            long now = System.currentTimeMillis();
+            locks.forEach((filename, lock) -> {
+                if (now - lock.lastActiveTime > TIMEOUT_MS) {
+                    if (lock.writer != null || !lock.readers.isEmpty()) {
+                        System.out.println("[Timeout] Releasing locks for: " + filename);
+                        synchronized (lock) {
+                            lock.writer = null;
+                            lock.readers.clear();
+                        }
+                    }
+                }
+            });
+        }, 5, 5, TimeUnit.SECONDS);
     }
 
-    private static class ClientHandler implements Runnable {
+    static class ClientHandler extends Thread {
         private Socket socket;
+        private String clientId;
 
-        public ClientHandler(Socket socket) {
+        ClientHandler(Socket socket) {
             this.socket = socket;
+            this.clientId = socket.getRemoteSocketAddress().toString();
+
         }
 
-        @Override
         public void run() {
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                    PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
-
-                String line = in.readLine();
-                if (line == null)
-                    return;
-                String[] parts = line.split(" ", 3);
-                String command = parts[0]; //FETCH or STORE
-
-                if ("FETCH".equals(command)) {
-                    String path = parts[1];
-                    String mode = parts[2];
-
-                    while(true){//期待されるmodeでなければerrorを返す
-                        try {
-                            modeSet.valueOf(mode);
+            try (BufferedReader in = new BufferedReader(
+                    new InputStreamReader(socket.getInputStream()));
+                    PrintWriter out = new PrintWriter(
+                            socket.getOutputStream(), true)) {
+                String line;
+                while ((line = in.readLine()) != null) {
+                    String[] cmd = line.split(" ", 3);
+                    switch (cmd[0]) {
+                        case "OPEN":
+                            handleOpen(cmd, out);
                             break;
-                        } catch(IllegalArgumentException e){
-                            out.println("ERROR: Invalid mode. mode should be READ_ONLY, WRITE_ONLY, or RW");
-                            mode = in.readLine();
-                        }
+                        case "UPDATE":
+                            handleUpdate(cmd, in, out);
+                            break;
+                        case "CLOSE":
+                            handleClose(cmd);
+                            break;
+                        case "KEEP_ALIVE":
+                            handleKeepAlive(cmd);
+                            break; // タイムアウト延長
+                        default:
+                            out.println("ERROR Unknown command");
                     }
-
-
-                    // 書き込みモード -> ロック管理
-                    if (mode.contains("WRITE")) {
-                        if (writeLocks.containsKey(path)) {
-                            out.println("ERROR: File is locked by another client");
-                            return;
-                        }
-                        writeLocks.put(path, socket.getRemoteSocketAddress().toString());
-                    }
-
-                    File filedata = fileStore.get(path);
-                    if(filedata == null){
-                        filedata = new File();
-                        filedata.lastaccessed = LocalDateTime.now();
-                        fileStore.put(path, filedata);// ファイル内容を保存
-                    }else{
-                        filedata.lastaccessed = LocalDateTime.now();
-                    }
-                    
-                    out.println("SUCCESS");
-                    out.println(filedata.content); // 実際は終端文字などの工夫が必要
-
-                } else if ("STORE".equals(command)) {
-                    String path = parts[1];
-                    StringBuilder content = new StringBuilder();
-                    String inputLine;
-
-                    while (!(inputLine = in.readLine()).equals("__END__")) {
-                        content.append(inputLine).append("\n");
-                    }
-                    File filedata = fileStore.get(path);
-                    if (filedata == null) {
-                        System.out.println("Creating new file entry for: " + path);
-                        filedata = new File();
-                    }
-
-                    filedata.content = content.toString().trim();// ファイル内容
-                    filedata.lastsaved = LocalDateTime.now(); // 最終保存日時
-                     
-                    fileStore.put(path, filedata);// ファイル内容を保存
-                    writeLocks.remove(path); // 更新後にロック解除
-                    out.println("SUCCESS");
-
-                } else if("UNLOCK".equals(command)) {
-                    String path = parts[1];
-                    writeLocks.remove(path); // ロックを解除
-                    out.println("SUCCESS");
-
-                } else if ("LIST_FILES".equals(command)) {
-                    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss");
-                   
-                    out.println("FILES_LIST_START");//
-                    out.println("File List:");
-                    out.println("Filename \t Last Saved \t\t Last Accessed");
-
-                    for (String filePath : fileStore.keySet()) {
-                        out.print("- " + filePath);//ファイル名を送信
-
-                        if(fileStore.get(filePath).lastsaved != null){//最終保存日時があれば送信
-                            out.print(" \t " + fileStore.get(filePath).lastsaved.format(formatter));
-                        }else{
-                            out.print(" \t " + "***");
-                        }
-
-                        if(fileStore.get(filePath).lastaccessed != null){//最終アクセス日時があれば送信
-                            out.println(" \t " + fileStore.get(filePath).lastaccessed.format(formatter));
-                        }else{
-                            out.println(" \t " + "***");
-                        }
-
-                    }
-                    out.println("FILES_LIST_END");
-
-                } else if("VIEW_LOCKS".equals(command)) {
-                    out.println("LOCKS_LIST_START");
-                    for (Map.Entry<String, String> entry : writeLocks.entrySet()) {
-                        out.println("File: " + entry.getKey() + " locked by " + entry.getValue());
-                    }
-                    out.println("LOCKS_LIST_END");
-                
-                }else {
-                    out.println("ERROR: Unknown command");
                 }
             } catch (IOException e) {
-                e.printStackTrace();
+                releaseAllLocks();
+            }
+        }
+
+        private synchronized void handleOpen(String[] cmd, PrintWriter out) {
+            String file = cmd[1];
+            String mode = cmd[2];
+
+            files.putIfAbsent(file, new FileEntry(""));
+            locks.putIfAbsent(file, new LockState());
+
+            LockState lock = locks.get(file);
+            lock.touch();
+
+            synchronized (lock) {
+                if (mode.equals("READ")) {
+                    if (lock.writer != null) {
+                        out.println("ERROR Locked for WRITE");
+                        return;
+                    }
+                    lock.readers.add(clientId);
+                } else { // WRITE
+                    if (lock.writer != null || !lock.readers.isEmpty()) {
+                        out.println("ERROR Locked");
+                        return;
+                    }
+                    lock.writer = clientId;
+                }
+            }
+
+            FileEntry fe = files.get(file);
+            out.println("OK " + fe.version);
+            out.println(fe.content);
+        }
+
+        private synchronized void handleUpdate(
+                String[] cmd, BufferedReader in, PrintWriter out) throws IOException {
+            String file = cmd[1];
+            int clientVersion = Integer.parseInt(cmd[2]);
+            String newContent = in.readLine();
+
+            LockState lock = locks.get(file);
+            if (lock != null)
+                lock.touch();
+
+            FileEntry fe = files.get(file);
+            if (fe.version != clientVersion) {
+                out.println("CONFLICT " + fe.version);
+            } else {
+                fe.content = newContent;
+                fe.version++;
+                out.println("OK " + fe.version);
+            }
+        }
+
+        private synchronized void handleClose(String[] cmd) {
+            String file = cmd[1];
+            LockState lock = locks.get(file);
+            if (lock != null) {
+                synchronized (lock) {
+                    lock.readers.remove(clientId);
+                    if (clientId.equals(lock.writer))
+                        lock.writer = null;
+                }
+            }
+        }
+
+        private void handleKeepAlive(String[] cmd) {
+            LockState lock = locks.get(cmd[1]);
+            if (lock != null)
+                lock.touch();
+        }
+
+        private synchronized void releaseAllLocks() {
+            for (LockState lock : locks.values()) {
+                lock.readers.remove(clientId);
+                if (clientId.equals(lock.writer)) {
+                    lock.writer = null;
+                }
             }
         }
     }

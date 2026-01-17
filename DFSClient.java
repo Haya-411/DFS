@@ -3,192 +3,121 @@ import java.net.*;
 import java.util.*;
 
 public class DFSClient {
-    private String currentFilePath;
-    private String localCache;
-    private String accessMode; // "READ", "WRITE", "RW"
-    private boolean isDirty = false; // 変更があったか
-    private String serverHost;
-    private int serverPort = 8080;
+    private static String currentFile;
+    private static String mode;
+    private static int version; // バージョン番号
+    private static boolean dirty = false; // 変更があったか
 
-    public static void main(String[] args) {
-        DFSClient client = new DFSClient();
-        try {
-            //System.out.println("Testing DFSClient...");
-            //client.open("localhost", "sample.txt", "RW");
-            // Read current content
-            //System.out.println("Current cache: " + client.read());
-            // Rewrite content
-            //System.out.println("Test completed");            
-            // Open file with read-write mode(rw)
-            Scanner scanner = new Scanner(System.in);
-            
-            
-            while (true) {
-                System.out.print("> ");
-                String command = scanner.nextLine().trim();
-                String[] parts = command.split(" ", 4);
-                
-                if (parts.length == 0) continue;
-                String cmd = parts[0].toLowerCase();
+    // キャッシュ情報の構造体
+    static class CacheEntry {
+        String content;
+        int version;
+        boolean dirty;
 
-                switch (cmd) {
-                    case "open":
-                        if (parts.length >= 4) {
-                            client.open(parts[1], parts[2], parts[3]);
-                        } else {
-                        System.out.println("Format: open <host> <path> <mode>");
-                        }
-                        break;
-
-                    case "read":
-                        System.out.println("Current cache: " + client.read());
-                        break;
-
-                    case "write":
-                        if (parts.length >= 2) {
-                            client.write(parts[1]);
-                        } else {
-                            System.out.println("Format: write <content>");
-                        }
-                        break;
-                
-                    case "close":
-                        client.close();
-                        break;
-
-                    case "ls":
-                        client.listFiles();
-                        break;
-
-                    case "vlock":
-                        client.viewLocks();
-                        break;
-
-                    case "exit":
-                        System.out.println("Test completed");
-                        return;
-
-                    default:
-                        System.out.println("Unknown command. Available: open, read, write, close, exit, ls, vlock");
-            }
-        }
-        } catch (IOException e) {
-            System.err.println("Error: " + e.getMessage());
-            e.printStackTrace();
+        CacheEntry(String content, int version) {
+            this.content = content;
+            this.version = version;
+            this.dirty = false;
         }
     }
 
-    // open: サーバからデータを取得しキャッシュする
-    public void open(String siteName, String path, String mode) throws IOException {
-        this.serverHost = siteName;
-        this.currentFilePath = path;
-        this.accessMode = mode;
+    // LRUキャッシュ
+    private static final int MAX_CACHE_SIZE = 3; // 最大キャッシュ数を設定
+    private static Map<String, CacheEntry> lruCache = new LinkedHashMap<>(MAX_CACHE_SIZE, 0.75f, true) {
+        protected boolean removeEldestEntry(Map.Entry<String, CacheEntry> eldest) {
+            if (size() > MAX_CACHE_SIZE) {
+                System.out.println("[Cache] Evicting oldest file: " + eldest.getKey());
+                return true;
+            }
+            return false;
+        }
+    };
 
-        try (Socket socket = new Socket(serverHost, serverPort);
-                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+    public static void main(String[] args) throws Exception {
+        Socket socket = new Socket("localhost", 8080);
+        BufferedReader in = new BufferedReader(
+                new InputStreamReader(socket.getInputStream()));
+        PrintWriter out = new PrintWriter(
+                socket.getOutputStream(), true);
 
+        Scanner scanner = new Scanner(System.in);
+        System.out.println("DFS Client started. (Max Cache: " + MAX_CACHE_SIZE + ")");
 
-            out.println("FETCH " + path + " " + mode);
-            String status = in.readLine();
-            if ("SUCCESS".equals(status)) {
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = in.readLine()) != null) {
-                    sb.append(line).append("\n");
-                }
-                this.localCache = sb.toString().trim();
-                this.isDirty = false;
-                System.out.println("Opened: " + path + " [" + mode + "]");
-            } else {
-                throw new IOException("Server Error: " + status);
+        while (true) {
+            System.out.print("> ");
+            String line = scanner.nextLine();
+            String[] cmd = line.split(" ");
+            if (cmd.length == 0)
+                continue;
+
+            switch (cmd[0].toUpperCase()) {
+                case "OPEN":
+                    handleOpen(cmd, out, in);
+                    break;
+                case "READ":
+                    if (currentFile != null)
+                        System.out.println(lruCache.get(currentFile).content);
+                    break;
+                case "WRITE":
+                    handleWrite(cmd);
+                    break;
+                case "CLOSE":
+                    handleClose(out, in);
+                    break;
+                default:
+                    System.out.println("Unknown command");
             }
         }
     }
 
-    public String read() {
-        if (accessMode.equals("WRITE_ONLY"))
-            return "Error: Write only";
-        return localCache;
-    }
-
-    public void write(String newContent) {
-        if (accessMode.equals("READ_ONLY")) {
-            System.out.println("Error: Read only mode");
+    private static void handleOpen(String[] cmd, PrintWriter out, BufferedReader in) throws IOException {
+        out.println("OPEN " + cmd[1] + " " + cmd[2]);
+        String status = in.readLine();
+        if (status.startsWith("ERROR")) {
+            System.out.println(status);
             return;
         }
-        this.localCache = newContent;
-        this.isDirty = true;
+
+        int serverVersion = Integer.parseInt(status.split(" ")[1]);
+        String serverContent = in.readLine();
+
+        // キャッシュの更新または新規作成
+        lruCache.put(cmd[1], new CacheEntry(serverContent, serverVersion));
+        currentFile = cmd[1];
+        mode = cmd[2];
+        System.out.println("Opened " + currentFile + " (v" + serverVersion + ")");
     }
 
-    // close: 変更があればサーバへ送る
-    public void close() throws IOException {
-        if ((accessMode.contains("WRITE") || accessMode.contains("RW"))) {
-            try (Socket socket = new Socket(serverHost, serverPort);
-                    PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-                    BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-                
-
-                if(isDirty){
-                   
-                    out.println("STORE " + currentFilePath);
-                    out.print(localCache + "\n__END__\n");
-                    out.flush();
-
-                    String w = in.readLine();
-                    System.out.println("Server response: " + w);
-
-                    if ("SUCCESS".equals(w)) {
-                        System.out.println("Changes saved to server.");
-                    }
-                }else{
-                    out.println("UNLOCK " + currentFilePath);//ロック解除だけ行う
-                    if ("SUCCESS".equals(in.readLine())) System.out.println("No changes to save.");
-                }
-        
-            }
+    private static void handleWrite(String[] cmd) {
+        if (currentFile == null || !mode.equals("WRITE")) {
+            System.out.println("ERROR: Not opened for WRITE");
+            return;
         }
-
-        this.localCache = null;
-        this.currentFilePath = null;
-        System.out.println("Client closed.");
+        CacheEntry entry = lruCache.get(currentFile);
+        entry.content += cmd[1];
+        entry.dirty = true;
+        System.out.println("Updated local cache (dirty)");
     }
 
-    // listFiles: サーバ上のファイル一覧を取得
-    public void listFiles() throws IOException { 
-        try (Socket socket = new Socket(serverHost, serverPort);
-                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+    private static void handleClose(PrintWriter out, BufferedReader in) throws IOException {
+        if (currentFile == null)
+            return;
 
-            out.println("LIST_FILES");//コマンドをサーバへ送信
-            
-            String line;
-            
-            while (!(line = in.readLine()).equals("FILES_LIST_END")) { 
-                if (!line.equals("FILES_LIST_START")) {
-                    System.out.println(line);
-                }
+        CacheEntry entry = lruCache.get(currentFile);
+        if (entry.dirty) {
+            out.println("UPDATE " + currentFile + " " + entry.version);
+            out.println(entry.content);
+            String res = in.readLine();
+            if (res.startsWith("OK")) {
+                entry.version = Integer.parseInt(res.split(" ")[1]);
+                entry.dirty = false;
+                System.out.println("Server updated to v" + entry.version);
+            } else {
+                System.out.println("Update failed: " + res);
             }
         }
-    }
-
-    // viewLocks: サーバ上のファイルのロック状態を取得
-    public void viewLocks() throws IOException { 
-        try (Socket socket = new Socket(serverHost, serverPort);
-                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-
-            out.println("VIEW_LOCKS");//コマンドをサーバへ送信
-
-            String line;
-            System.out.println("Current Locks on server:");
-
-            while (!(line = in.readLine()).equals("LOCKS_LIST_END")) {
-                if (!line.equals("LOCKS_LIST_START")) {
-                    System.out.println(" - " + line);
-                }
-            }
-
-        }
+        out.println("CLOSE " + currentFile);
+        System.out.println("Closed and lock released.");
+        currentFile = null;
     }
 }
