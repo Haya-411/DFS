@@ -17,9 +17,13 @@ public class DFSServer {
     static class FileEntry {// ファイル情報を管理するクラス
         String content; // ファイル内容
         int version = 0; // バージョン番号 (int)
+        LocalDateTime lastSaved;
+        LocalDateTime lastAccessed;
 
         FileEntry(String content) {
             this.content = content;
+            this.lastSaved = null;
+            this.lastAccessed = LocalDateTime.now();
         }
     }
 
@@ -96,6 +100,9 @@ public class DFSServer {
                         case "KEEP_ALIVE":
                             handleKeepAlive(cmd);
                             break; // タイムアウト延長
+                        case "LIST":
+                            handleList(in,out);
+                            break;
                         default:
                             out.println("ERROR Unknown command");
                     }
@@ -106,6 +113,7 @@ public class DFSServer {
         }
 
         private synchronized void handleOpen(String[] cmd, PrintWriter out) {
+
             String file = cmd[1];
             String mode = cmd[2];
 
@@ -122,7 +130,7 @@ public class DFSServer {
                         return;
                     }
                     lock.readers.add(clientId);
-                } else { // WRITE
+                } else { // WRITE,RW
                     if (lock.writer != null || !lock.readers.isEmpty()) {
                         out.println("ERROR Locked");
                         return;
@@ -150,6 +158,7 @@ public class DFSServer {
             if (fe.version != clientVersion) {
                 out.println("CONFLICT " + fe.version);
             } else {
+                fe.lastSaved = LocalDateTime.now();
                 fe.content = newContent;
                 fe.version++;
                 out.println("OK " + fe.version);
@@ -172,6 +181,47 @@ public class DFSServer {
             LockState lock = locks.get(cmd[1]);
             if (lock != null)
                 lock.touch();
+        }
+
+        private void handleList(BufferedReader in, PrintWriter out){
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss");
+                   
+            out.println("FILES_LIST_START");//
+            out.println("File List:");
+            out.println(" Filename \t      Last Saved      \t    Last Accessed    \t Lock state");
+
+            for (String fileName : files.keySet()) {
+                
+                out.print("- " + fileName);//ファイル名を送信
+
+                    if(files.get(fileName).lastSaved != null){//最終保存日時があれば送信
+                        out.print(" \t " + files.get(fileName).lastSaved.format(formatter));
+                    }else{
+                        out.print(" \t " + "      ********      ");
+                    }
+
+                    if(files.get(fileName).lastAccessed != null){//最終アクセス日時があれば送信
+                        out.print(" \t " + files.get(fileName).lastAccessed.format(formatter));
+                    }else{
+                        out.print(" \t " + "      ********      ");
+                    }
+                    
+                    boolean hasWriter = locks.get(fileName).writer != null;
+                    boolean hasReaders = !locks.get(fileName).readers.isEmpty();
+                    
+                    if (hasReaders && hasWriter) {
+                        out.println(" \t LOCKED (READ/WRITE)");
+                    } else if (hasReaders && !hasWriter) {
+                        out.println(" \t LOCKED (READ)");
+                    } else if (!hasReaders && hasWriter){
+                        out.println(" \t LOCKED (WRITE)");
+                    }else {
+                        out.println(" \t UNLOCKED");
+                    }
+
+            }
+            out.println("FILES_LIST_END");
+
         }
 
         private synchronized void releaseAllLocks() {

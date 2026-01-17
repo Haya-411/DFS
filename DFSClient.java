@@ -1,6 +1,7 @@
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.regex.*;
 
 public class DFSClient {
     private static String currentFile;
@@ -64,6 +65,10 @@ public class DFSClient {
                 case "CLOSE":
                     handleClose(out, in);
                     break;
+                case "LIST":
+                    handleList(out, in);
+                    break;
+                
                 default:
                     System.out.println("Unknown command");
             }
@@ -71,7 +76,22 @@ public class DFSClient {
     }
 
     private static void handleOpen(String[] cmd, PrintWriter out, BufferedReader in) throws IOException {
-        out.println("OPEN " + cmd[1] + " " + cmd[2]);
+        
+        Pattern patternRead = Pattern.compile("R|READ(?:[_-]ONLY)?");//R,READ,READ_ONLY,READ-ONLYを受け付ける
+        Matcher matcherRead = patternRead.matcher(cmd[2].toUpperCase());
+
+        Pattern patternWrite = Pattern.compile("W|WRITE(?:[_-]ONLY)?");//W,WRITE,WRITE_ONLY,WRITE-ONLYを受け付ける
+        Matcher matcherWrite = patternWrite.matcher(cmd[2].toUpperCase());
+
+        if(matcherRead.matches()){
+            mode = "READ";
+        }else if(matcherWrite.matches()){
+            mode = "WRITE";
+        }else{//それ以外はRead-Writeにする
+            mode = "RW";
+        }
+
+        out.println("OPEN " + cmd[1] + " " + mode);
         String status = in.readLine();
         if (status.startsWith("ERROR")) {
             System.out.println(status);
@@ -84,12 +104,11 @@ public class DFSClient {
         // キャッシュの更新または新規作成
         lruCache.put(cmd[1], new CacheEntry(serverContent, serverVersion));
         currentFile = cmd[1];
-        mode = cmd[2];
         System.out.println("Opened " + currentFile + " (v" + serverVersion + ")");
     }
 
     private static void handleWrite(String[] cmd) {
-        if (currentFile == null || !mode.equals("WRITE")) {
+        if (currentFile == null || mode.equals("READ")) {
             System.out.println("ERROR: Not opened for WRITE");
             return;
         }
@@ -119,5 +138,18 @@ public class DFSClient {
         out.println("CLOSE " + currentFile);
         System.out.println("Closed and lock released.");
         currentFile = null;
+    }
+
+    private static void handleList(PrintWriter out, BufferedReader in) throws IOException {
+        
+        out.println("LIST");
+        String line;
+            
+        while (!(line = in.readLine()).equals("FILES_LIST_END")) { 
+            if (!line.equals("FILES_LIST_START")) {
+                System.out.println(line);
+            }
+        }
+
     }
 }
