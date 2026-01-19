@@ -6,7 +6,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 public class DFSServer {
-    private static final int PORT = 8080;
+    private static final int PORT = 8080;// マスターサーバのポート番号
     // タイムアウトを設定(30秒)
     private static final long TIMEOUT_MS = 30_000; // 30秒
     // ファイル内容をメモリ上で管理
@@ -39,8 +39,24 @@ public class DFSServer {
     }
 
     public static void main(String[] args) throws IOException {
-        ServerSocket serverSocket = new ServerSocket(PORT);
-        System.out.println("DFS Server started on port " + PORT);
+        int myPort = Integer.parseInt(args[0]);
+        ServerSocket serverSocket = new ServerSocket(myPort);
+
+        System.out.println("DFS Server started on port " + myPort);
+
+        Socket socket = new Socket("localhost", PORT);//親サーバーへ接続
+        BufferedReader in = new BufferedReader(
+                new InputStreamReader(socket.getInputStream()));
+        PrintWriter out = new PrintWriter(
+                socket.getOutputStream(), true);
+
+        out.println("REGISTER localhost " + args[0] + " ./"); // 親サーバーへ登録
+
+        if(in.readLine().equals("OK")){
+            System.out.println("Registered to Master Server");
+        }else{
+            System.out.println("Failed to register to Master Server");
+        }
 
         // タイムアウト監視
         startTimeoutCleaner();
@@ -119,6 +135,7 @@ public class DFSServer {
 
             files.putIfAbsent(file, new FileEntry(""));
             locks.putIfAbsent(file, new LockState());
+            files.get(file).lastAccessed = LocalDateTime.now(); // アクセス日時更新
 
             LockState lock = locks.get(file);
             lock.touch();
@@ -145,11 +162,11 @@ public class DFSServer {
         }
 
         private synchronized void handleUpdate(
-                String[] cmd, BufferedReader in, PrintWriter out) throws IOException {
+            String[] cmd, BufferedReader in, PrintWriter out) throws IOException {
             String file = cmd[1];
             int clientVersion = Integer.parseInt(cmd[2]);
             String newContent = in.readLine();
-
+          
             LockState lock = locks.get(file);
             if (lock != null)
                 lock.touch();

@@ -8,6 +8,10 @@ public class DFSClient {
     private static String mode;
     private static int version; // バージョン番号
     private static boolean dirty = false; // 変更があったか
+    private static Socket serverSocket = null;//子サーバーとの接続ソケット
+    private static BufferedReader inServer;//子サーバーからの入力ストリーム
+    private static PrintWriter outServer;//子サーバーへの出力ストリーム
+
 
     // キャッシュ情報の構造体
     static class CacheEntry {
@@ -41,6 +45,7 @@ public class DFSClient {
         PrintWriter out = new PrintWriter(
                 socket.getOutputStream(), true);
 
+        
         Scanner scanner = new Scanner(System.in);
         System.out.println("DFS Client started. (Max Cache: " + MAX_CACHE_SIZE + ")");
 
@@ -66,7 +71,7 @@ public class DFSClient {
                     handleClose(out, in);
                     break;
                 case "LIST":
-                    handleList(out, in);
+                    handleList(outServer, inServer);
                     break;
                 
                 default:
@@ -75,7 +80,7 @@ public class DFSClient {
         }
     }
 
-    private static void handleOpen(String[] cmd, PrintWriter out, BufferedReader in) throws IOException {
+    private static void handleOpen(String[] cmd, PrintWriter outMaster, BufferedReader inMaster) throws IOException {
         
         Pattern patternRead = Pattern.compile("R|READ(?:[_-]ONLY)?");//R,READ,READ_ONLY,READ-ONLYを受け付ける
         Matcher matcherRead = patternRead.matcher(cmd[2].toUpperCase());
@@ -91,19 +96,39 @@ public class DFSClient {
             mode = "RW";
         }
 
-        out.println("OPEN " + cmd[1] + " " + mode);
-        String status = in.readLine();
-        if (status.startsWith("ERROR")) {
-            System.out.println(status);
+        outMaster.println("OPEN " + cmd[1] + " " + mode);
+        String host = cmd[1].substring(0, cmd[1].indexOf('/', 2));
+        String fileName = cmd[1].substring(cmd[1].indexOf('/', 2) + 1);
+        String statusMaster = inMaster.readLine();
+
+        if (statusMaster.startsWith("ERROR")) {
+            System.out.println(statusMaster);
             return;
         }
 
-        int serverVersion = Integer.parseInt(status.split(" ")[1]);
-        String serverContent = in.readLine();
+        int serverPort = Integer.parseInt(statusMaster.split(" ")[1]);
+        serverSocket = new Socket("localhost", serverPort);
+        inServer = new BufferedReader(new InputStreamReader(serverSocket.getInputStream()));
+        outServer = new PrintWriter(serverSocket.getOutputStream(), true);
+
+        if(inServer == null || outServer == null){
+            System.out.println("Failed to connect to DFS Server");
+            return;
+        }
+
+        outServer.println("OPEN " + fileName + " " + mode);//子サーバに対してOPENコマンドを送信
+        String statusServer = inServer.readLine();
+        
+        if (statusServer.startsWith("ERROR")) {
+            System.out.println(statusServer);
+            return;
+        }
+        int serverVersion = Integer.parseInt(statusServer.split(" ")[1]);
+        String serverContent = inServer.readLine();
 
         // キャッシュの更新または新規作成
-        lruCache.put(cmd[1], new CacheEntry(serverContent, serverVersion));
-        currentFile = cmd[1];
+        lruCache.put(fileName, new CacheEntry(serverContent, serverVersion));
+        currentFile = fileName;
         System.out.println("Opened " + currentFile + " (v" + serverVersion + ")");
     }
 
@@ -124,9 +149,11 @@ public class DFSClient {
 
         CacheEntry entry = lruCache.get(currentFile);
         if (entry.dirty) {
-            out.println("UPDATE " + currentFile + " " + entry.version);
-            out.println(entry.content);
-            String res = in.readLine();
+           
+            outServer.println("UPDATE " + currentFile + " " + entry.version);
+            outServer.println(entry.content);
+            
+            String res = inServer.readLine();
             if (res.startsWith("OK")) {
                 entry.version = Integer.parseInt(res.split(" ")[1]);
                 entry.dirty = false;
@@ -135,9 +162,21 @@ public class DFSClient {
                 System.out.println("Update failed: " + res);
             }
         }
-        out.println("CLOSE " + currentFile);
+        outServer.println("CLOSE " + currentFile);
         System.out.println("Closed and lock released.");
+        
+        out.println("CLOSE");
+        if(in.readLine().equals("OK")){
+            System.out.println("Closing a file Succeeded.");
+        }
+        
         currentFile = null;
+        inServer = null;//子サーバーとの接続を閉じる
+        outServer = null;
+        serverSocket.close();
+        
+        
+
     }
 
     private static void handleList(PrintWriter out, BufferedReader in) throws IOException {
