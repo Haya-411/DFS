@@ -8,7 +8,7 @@ import java.time.format.DateTimeFormatter;
 public class DFSServer {
     private static final int PORT = 8080;// マスターサーバのポート番号
     // タイムアウトを設定(30秒)
-    private static final long TIMEOUT_MS = 30_000; // 30秒
+    private static final long TIMEOUT_MS = 60_000; // 60秒
     // ファイル内容をメモリ上で管理
     private static Map<String, FileEntry> files = new ConcurrentHashMap<>();
     // 書き込み制限(同時書き込みを防ぐ): file → LockInfo
@@ -75,6 +75,7 @@ public class DFSServer {
                 if (now - lock.lastActiveTime > TIMEOUT_MS) {
                     if (lock.writer != null || !lock.readers.isEmpty()) {
                         System.out.println("[Timeout] Releasing locks for: " + filename);
+                        
                         synchronized (lock) {
                             lock.writer = null;
                             lock.readers.clear();
@@ -114,7 +115,7 @@ public class DFSServer {
                             handleClose(cmd, in, out);
                             break;
                         case "KEEP_ALIVE":
-                            handleKeepAlive(cmd);
+                            handleKeepAlive(cmd, in, out);
                             break; // タイムアウト延長
                         case "LIST":
                             handleList(in,out);
@@ -196,10 +197,21 @@ public class DFSServer {
             out.println("OK");
         }
 
-        private void handleKeepAlive(String[] cmd) {
+        private void handleKeepAlive(String[] cmd, BufferedReader in, PrintWriter out) throws IOException {
             LockState lock = locks.get(cmd[1]);
-            if (lock != null)
+            boolean hasWriter = false; 
+            boolean hasReaders = false;
+
+            if(lock.writer!=null) hasWriter = true;
+            if(!lock.readers.isEmpty()) hasReaders = true;
+
+            if (hasWriter || hasReaders) {
                 lock.touch();
+                out.println("OK");
+            }else{
+                out.println("[ERROR] No lock found for KEEP_ALIVE from " + clientId);
+            }
+            
         }
 
         private void handleList(BufferedReader in, PrintWriter out){
@@ -223,10 +235,13 @@ public class DFSServer {
                     }else{
                         out.print(" \t " + "      ********      ");
                     }
-                    
-                    boolean hasWriter = locks.get(fileName).writer != null;
-                    boolean hasReaders = !locks.get(fileName).readers.isEmpty();
-                    
+
+                    boolean hasWriter = false; 
+                    boolean hasReaders = false;
+
+                    if(locks.get(fileName).writer!=null) hasWriter = true;
+                    if(!locks.get(fileName).readers.isEmpty()) hasReaders = true;
+                      
                     if (hasReaders && hasWriter) {
                         out.println(" \t LOCKED (READ/WRITE)");
                     } else if (hasReaders && !hasWriter) {

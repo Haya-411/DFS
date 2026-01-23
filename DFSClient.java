@@ -73,6 +73,10 @@ public class DFSClient {
                 case "LIST":
                     handleList(out, in);
                     break;
+
+                case "KEEP":
+                    handleKeepAlive(out, in);
+                    break;
                 
                 default:
                     System.out.println("Unknown command");
@@ -191,4 +195,23 @@ public class DFSClient {
         }
         return;
     }
+
+    private static void handleKeepAlive(PrintWriter out, BufferedReader in) throws IOException {
+        if(outServer == null || inServer == null){
+            System.out.println("No active server connection for keep-alive.");
+            return;
+        }else{
+            System.out.println("Sending keep-alive for " + currentFile);
+            outServer.println("KEEP_ALIVE " + currentFile);
+        }
+        String status = inServer.readLine();
+
+        if (status.equals("OK")) {
+            System.out.println("Keep-alive acknowledged by server.");
+        } else {
+            System.out.println(status);
+        }
+
+    }
+
 }
