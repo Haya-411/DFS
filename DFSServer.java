@@ -111,7 +111,7 @@ public class DFSServer {
                             handleUpdate(cmd, in, out);
                             break;
                         case "CLOSE":
-                            handleClose(cmd);
+                            handleClose(cmd, in, out);
                             break;
                         case "KEEP_ALIVE":
                             handleKeepAlive(cmd);
@@ -120,7 +120,7 @@ public class DFSServer {
                             handleList(in,out);
                             break;
                         default:
-                            out.println("ERROR Unknown command");
+                            out.println("[ERROR] Unknown command");
                     }
                 }
             } catch (IOException e) {
@@ -143,13 +143,13 @@ public class DFSServer {
             synchronized (lock) {
                 if (mode.equals("READ")) {
                     if (lock.writer != null) {
-                        out.println("ERROR Locked for WRITE");
+                        out.println("[ERROR] Locked for WRITE");
                         return;
                     }
                     lock.readers.add(clientId);
                 } else { // WRITE,RW
                     if (lock.writer != null || !lock.readers.isEmpty()) {
-                        out.println("ERROR Locked");
+                        out.println("[ERROR] Locked");
                         return;
                     }
                     lock.writer = clientId;
@@ -182,7 +182,7 @@ public class DFSServer {
             }
         }
 
-        private synchronized void handleClose(String[] cmd) {
+        private synchronized void handleClose(String[] cmd, BufferedReader in, PrintWriter out) throws IOException {
             String file = cmd[1];
             LockState lock = locks.get(file);
             if (lock != null) {
@@ -192,6 +192,8 @@ public class DFSServer {
                         lock.writer = null;
                 }
             }
+
+            out.println("OK");
         }
 
         private void handleKeepAlive(String[] cmd) {
@@ -204,7 +206,6 @@ public class DFSServer {
             DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss");
                    
             out.println("FILES_LIST_START");//
-            out.println("File List:");
             out.println(" Filename \t      Last Saved      \t    Last Accessed    \t Lock state");
 
             for (String fileName : files.keySet()) {

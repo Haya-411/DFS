@@ -71,7 +71,7 @@ public class DFSClient {
                     handleClose(out, in);
                     break;
                 case "LIST":
-                    handleList(outServer, inServer);
+                    handleList(out, in);
                     break;
                 
                 default:
@@ -81,7 +81,11 @@ public class DFSClient {
     }
 
     private static void handleOpen(String[] cmd, PrintWriter outMaster, BufferedReader inMaster) throws IOException {
-        
+        if (cmd.length < 3) {
+        System.out.println("ERROR: OPEN requires at least 2 arguments (file path and mode)");
+        return;
+        }
+
         Pattern patternRead = Pattern.compile("R|READ(?:[_-]ONLY)?");//R,READ,READ_ONLY,READ-ONLYを受け付ける
         Matcher matcherRead = patternRead.matcher(cmd[2].toUpperCase());
 
@@ -101,7 +105,7 @@ public class DFSClient {
         String fileName = cmd[1].substring(cmd[1].indexOf('/', 2) + 1);
         String statusMaster = inMaster.readLine();
 
-        if (statusMaster.startsWith("ERROR")) {
+        if (statusMaster.startsWith("[ERROR]")) {
             System.out.println(statusMaster);
             return;
         }
@@ -119,7 +123,7 @@ public class DFSClient {
         outServer.println("OPEN " + fileName + " " + mode);//子サーバに対してOPENコマンドを送信
         String statusServer = inServer.readLine();
         
-        if (statusServer.startsWith("ERROR")) {
+        if (statusServer.startsWith("[ERROR]")) {
             System.out.println(statusServer);
             return;
         }
@@ -134,7 +138,7 @@ public class DFSClient {
 
     private static void handleWrite(String[] cmd) {
         if (currentFile == null || mode.equals("READ")) {
-            System.out.println("ERROR: Not opened for WRITE");
+            System.out.println("[ERROR]: Not opened for WRITE");
             return;
         }
         CacheEntry entry = lruCache.get(currentFile);
@@ -163,24 +167,20 @@ public class DFSClient {
             }
         }
         outServer.println("CLOSE " + currentFile);
-        System.out.println("Closed and lock released.");
+        if(inServer.readLine().equals("OK")) System.out.println("Closed and lock released.");
         
         out.println("CLOSE");
-        if(in.readLine().equals("OK")){
-            System.out.println("Closing a file Succeeded.");
-        }
+        if(in.readLine().equals("OK")) System.out.println("Closing a file Succeeded.");
+        
         
         currentFile = null;
         inServer = null;//子サーバーとの接続を閉じる
         outServer = null;
-        serverSocket.close();
-        
-        
+        serverSocket.close();     
 
     }
 
     private static void handleList(PrintWriter out, BufferedReader in) throws IOException {
-        
         out.println("LIST");
         String line;
             
@@ -189,6 +189,6 @@ public class DFSClient {
                 System.out.println(line);
             }
         }
-
+        return;
     }
 }
