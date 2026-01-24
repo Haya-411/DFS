@@ -61,8 +61,10 @@ public class DFSClient {
                     handleOpen(cmd, out, in);
                     break;
                 case "READ":
-                    if (currentFile != null)
+                    if (currentFile != null && !mode.equals("WRITE"))
                         System.out.println(lruCache.get(currentFile).content);
+                    else 
+                        System.out.println("[ERROR]: WRITE_ONLY mode or No file was found.");
                     break;
                 case "WRITE":
                     handleWrite(cmd);
